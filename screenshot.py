@@ -137,7 +137,7 @@ def main() -> None:
     """
     import os
     from dotenv import load_dotenv
-    from grounding import GroundingEngine
+    from grounding import init_client, find_element
 
     load_dotenv()
 
@@ -146,8 +146,9 @@ def main() -> None:
         print("ERROR: GEMINI_API_KEY not set. Copy .env.example to .env and add your key.")
         sys.exit(1)
 
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    client = init_client(api_key)
     positions = ["top_left", "center", "bottom_right"]
-    grounder = GroundingEngine(api_key=api_key)
 
     for position in positions:
         input(
@@ -159,7 +160,7 @@ def main() -> None:
         screenshot = capture_desktop()
 
         print(f"  Grounding Notepad icon...")
-        coords = grounder.find_element(screenshot, "Notepad shortcut desktop icon")
+        coords = find_element(client, model, screenshot, "Notepad shortcut desktop icon")
 
         if coords is None:
             print(f"  WARNING: Could not detect Notepad icon for position '{position}'. Skipping.")

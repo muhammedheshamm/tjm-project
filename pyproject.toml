@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai>=1.73.1",
-    "httpx>=0.28.1",
+    "requests>=2.32.0",
     "mss>=10.1.0",
     "pillow>=12.2.0",
     "pyautogui>=0.9.54",

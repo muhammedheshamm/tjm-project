@@ -1,12 +1,9 @@
 """
 automation.py — Notepad desktop automation via pyautogui and pygetwindow.
-
-Handles all mouse/keyboard interaction after the grounding engine has
-returned coordinates: launching Notepad, typing content, saving files,
-and closing the application.
 """
 
 import logging
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
@@ -17,196 +14,156 @@ import pyperclip
 
 log = logging.getLogger(__name__)
 
-# Guard: never move the mouse faster than this (safety for automated runs)
-pyautogui.PAUSE = 0.05          # 50 ms between every pyautogui call
-pyautogui.FAILSAFE = True       # move mouse to top-left corner to abort
+pyautogui.FAILSAFE = True
+pyautogui.PAUSE = 0.05
 
-NOTEPAD_LAUNCH_TIMEOUT = 8.0    # seconds to wait for Notepad window to appear
-NOTEPAD_WINDOW_KEYWORDS = ("notepad", "untitled")  # case-insensitive window-title matches
-SAVE_DIALOG_SETTLE = 0.6        # seconds to wait after Ctrl+S for dialog to appear
-CLOSE_SETTLE = 0.5              # seconds after Alt+F4 before next action
-
-
-class NotepadAutomation:
-    """
-    Controls Notepad for a single write-save-close cycle.
-
-    All methods log their actions and raise descriptive exceptions on failure
-    so the orchestrator can decide whether to retry.
-    """
-
-    # ------------------------------------------------------------------
-    # Launch
-    # ------------------------------------------------------------------
-
-    def launch(self, x: int, y: int) -> bool:
-        """
-        Double-click the Notepad icon at (x, y) and wait for it to open.
-
-        Args:
-            x, y: Screen coordinates returned by the grounding engine.
-
-        Returns:
-            True if Notepad window was confirmed open; False on timeout.
-        """
-        log.info("Double-clicking Notepad icon at (%d, %d)", x, y)
-        pyautogui.moveTo(x, y, duration=0.3)
-        pyautogui.doubleClick(x, y)
-
-        return self._wait_for_notepad(timeout=NOTEPAD_LAUNCH_TIMEOUT)
-
-    def _wait_for_notepad(self, timeout: float) -> bool:
-        """Poll for a Notepad window to appear within `timeout` seconds."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._find_notepad_window() is not None:
-                log.info("Notepad window confirmed open")
-                return True
-            time.sleep(0.3)
-        log.warning("Notepad did not open within %.1fs", timeout)
-        return False
-
-    def _find_notepad_window(self) -> Optional[object]:
-        """Return the first window whose title contains a Notepad keyword, or None."""
-        try:
-            all_windows = gw.getAllWindows()
-        except Exception as exc:
-            log.debug("pygetwindow error: %s", exc)
-            return None
-
-        for win in all_windows:
-            title_lower = (win.title or "").lower()
-            if any(kw in title_lower for kw in NOTEPAD_WINDOW_KEYWORDS):
-                return win
-        return None
-
-    def is_running(self) -> bool:
-        """Return True if a Notepad window is currently open."""
-        return self._find_notepad_window() is not None
-
-    def focus(self) -> None:
-        """Bring the Notepad window to the foreground."""
-        win = self._find_notepad_window()
-        if win:
-            try:
-                win.activate()
-                time.sleep(0.2)
-            except Exception as exc:
-                log.debug("Could not activate Notepad window: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Content entry
-    # ------------------------------------------------------------------
-
-    def type_post(self, title: str, body: str) -> None:
-        """
-        Paste the formatted post content into the active Notepad window.
-
-        Uses clipboard paste (Ctrl+V) instead of pyautogui.write() to
-        correctly handle unicode characters, newlines, and special chars.
-        """
-        self.focus()
-        content = f"Title: {title}\n\n{body}"
-        log.info("Pasting content (%d chars) into Notepad", len(content))
-
-        # Ensure any existing text is cleared first
-        pyautogui.hotkey("ctrl", "a")
-        time.sleep(0.1)
-
-        pyperclip.copy(content)
-        pyautogui.hotkey("ctrl", "v")
-        time.sleep(0.2)
-
-    # ------------------------------------------------------------------
-    # Save
-    # ------------------------------------------------------------------
-
-    def save_as(self, filepath: Path) -> None:
-        """
-        Save the current Notepad document to `filepath` via the Save As dialog.
-
-        Strategy: Ctrl+S opens 'Save As' for an unsaved document; we type the
-        full absolute path into the filename field and press Enter.
-        Handles the "file already exists — overwrite?" confirmation automatically.
-
-        Args:
-            filepath: Full path including filename (e.g. Desktop/tjm-project/post_1.txt)
-        """
-        self.focus()
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-
-        log.info("Saving to: %s", filepath)
-        pyautogui.hotkey("ctrl", "s")
-        time.sleep(SAVE_DIALOG_SETTLE)
-
-        # On first save of an unsaved Notepad document, a Save As dialog opens.
-        # Type the full path directly into the filename field.
-        # Using clipboard to avoid issues with backslashes in pyautogui.write()
-        pyperclip.copy(str(filepath))
-
-        # Clear any pre-filled filename and type ours
-        pyautogui.hotkey("ctrl", "a")
-        time.sleep(0.1)
-        pyautogui.hotkey("ctrl", "v")
-        time.sleep(0.2)
-        pyautogui.press("enter")
-        time.sleep(0.4)
-
-        # If a "file already exists" confirmation dialog appeared, confirm it
-        pyautogui.press("enter")
-        time.sleep(0.3)
-
-        log.info("Save complete: %s", filepath.name)
-
-    # ------------------------------------------------------------------
-    # Close
-    # ------------------------------------------------------------------
-
-    def close(self) -> None:
-        """
-        Close Notepad.
-
-        After saving via save_as(), the document is already saved so the
-        close prompt should not appear. If it does (e.g. content changed),
-        we dismiss it without saving to avoid blocking the loop.
-        """
-        self.focus()
-        log.info("Closing Notepad")
-        pyautogui.hotkey("alt", "f4")
-        time.sleep(CLOSE_SETTLE)
-
-        # If a "save changes?" dialog appeared, click "Don't Save"
-        # (We've already saved via save_as; this is a safety net)
-        _dismiss_unsaved_changes_dialog()
-
-        # Brief wait to let the OS fully close the window
-        time.sleep(0.3)
+LAUNCH_TIMEOUT    = 8.0   # seconds to wait for Notepad to open
+SAVE_DIALOG_SETTLE = 1.2  # seconds for the Save As dialog to appear
 
 
 # ---------------------------------------------------------------------------
-# Module-level helpers
+# Window helpers
 # ---------------------------------------------------------------------------
 
-def _dismiss_unsaved_changes_dialog() -> None:
-    """
-    Dismiss a potential 'Do you want to save changes?' dialog after closing.
+def _get_notepad() -> Optional[object]:
+    """Return the first Notepad window found, or None."""
+    windows = gw.getWindowsWithTitle("Notepad")
+    if windows:
+        return windows[0]
+    for w in gw.getAllWindows():
+        if "notepad" in (w.title or "").lower():
+            return w
+    return None
 
-    Notepad shows this if the buffer changed after the last save. We press
-    Tab to move to "Don't Save" (the second button) and press Enter,
-    avoiding any accidental overwrites of already-saved files.
-    """
-    time.sleep(0.3)
-    # Check for a dialog by looking for a window with "notepad" in title
-    # that is small (dialog-sized). Simpler: just press 'n' for "Don't Save".
-    # Windows Notepad "Don't Save" shortcut is Alt+N or just 'n' when focused.
+
+def _activate(win) -> None:
+    """Bring a window to the foreground and wait for focus."""
     try:
-        all_windows = gw.getAllWindows()
-        for win in all_windows:
-            title_lower = (win.title or "").lower()
-            if "notepad" in title_lower or "save" in title_lower:
-                # Press 'n' for "Don't Save" (works in English Windows locale)
-                pyautogui.press("n")
-                time.sleep(0.2)
-                return
-    except Exception:
-        pass
+        win.activate()
+        time.sleep(0.4)
+    except Exception as exc:
+        log.debug("activate() error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Public functions
+# ---------------------------------------------------------------------------
+
+def is_notepad_running() -> bool:
+    """Return True if a Notepad window is currently open."""
+    return _get_notepad() is not None
+
+
+def launch_notepad(x: int, y: int, timeout: float = LAUNCH_TIMEOUT) -> bool:
+    """Double-click the Notepad icon at (x, y) and wait for the window to open."""
+    log.info("Double-clicking Notepad icon at (%d, %d)", x, y)
+    pyautogui.moveTo(x, y, duration=0.3)
+    time.sleep(0.2)
+    pyautogui.doubleClick(x, y, interval=0.1)
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _get_notepad():
+            log.info("Notepad window confirmed open")
+            return True
+        time.sleep(0.3)
+
+    log.warning("Notepad did not open within %.1fs", timeout)
+    return False
+
+
+def type_text(text: str) -> None:
+    """Clear the Notepad window and paste text via clipboard."""
+    win = _get_notepad()
+    if win:
+        _activate(win)
+
+    log.info("Pasting content (%d chars) into Notepad", len(text))
+    pyautogui.hotkey("ctrl", "a")
+    time.sleep(0.1)
+    pyperclip.copy(text)
+    pyautogui.hotkey("ctrl", "v")
+    time.sleep(0.2)
+
+
+def save_file(filepath: Path) -> bool:
+    """
+    Save via Ctrl+S → Save As dialog → paste full path → Enter.
+
+    Notepad is configured to always start a new (untitled) session so Ctrl+S
+    always opens the Save As dialog.  The file is deleted beforehand to
+    prevent the overwrite sub-dialog (an extra Enter would land in the text
+    area and dirty the document after the save).
+
+    Returns True if the file exists on disk after saving.
+    """
+    win = _get_notepad()
+    if win:
+        _activate(win)
+
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    if filepath.exists():
+        filepath.unlink()
+
+    log.info("Saving to: %s", filepath)
+    pyperclip.copy(str(filepath))
+
+    pyautogui.hotkey("ctrl", "s")
+    time.sleep(SAVE_DIALOG_SETTLE)
+
+    pyautogui.hotkey("ctrl", "v")   # paste full path into the filename field
+    time.sleep(0.3)
+    pyautogui.press("enter")        # confirm save
+    time.sleep(0.6)
+
+    saved = filepath.exists()
+    if saved:
+        log.info("File saved: %s (%d bytes)", filepath.name, filepath.stat().st_size)
+    else:
+        log.warning("File not found after save: %s", filepath)
+    return saved
+
+
+def close_notepad() -> None:
+    """
+    Close Notepad via win.close() (WM_CLOSE).
+
+    After a clean save the document has no unsaved changes so it closes
+    immediately.  If a "save changes?" dialog appears, Tab → Enter dismisses
+    it ("Don't save").  taskkill is the last resort.
+    """
+    win = _get_notepad()
+    if not win:
+        return
+
+    log.info("Closing Notepad")
+    try:
+        win.close()
+    except Exception as exc:
+        log.debug("win.close() failed: %s — trying Alt+F4", exc)
+        _activate(win)
+        pyautogui.hotkey("alt", "f4")
+
+    time.sleep(1.0)
+
+    if _get_notepad():
+        log.debug("Save dialog detected — pressing Don't Save")
+        pyautogui.press("tab")
+        time.sleep(0.15)
+        pyautogui.press("enter")
+        time.sleep(0.5)
+
+    if _get_notepad():
+        log.warning("Force-closing Notepad")
+        try:
+            subprocess.run(
+                ["taskkill", "/f", "/im", "notepad.exe"],
+                capture_output=True, timeout=5,
+            )
+            time.sleep(0.5)
+        except Exception as exc:
+            log.debug("taskkill failed: %s", exc)
+
+
+def wait_before_next(delay: float = 1.0) -> None:
+    time.sleep(delay)

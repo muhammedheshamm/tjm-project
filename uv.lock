@@ -775,25 +775,25 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "google-genai" },
-    { name = "httpx" },
     { name = "mss" },
     { name = "pillow" },
     { name = "pyautogui" },
     { name = "pygetwindow" },
     { name = "pyperclip" },
     { name = "python-dotenv" },
+    { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=1.73.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mss", specifier = ">=10.1.0" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "pyautogui", specifier = ">=0.9.54" },
     { name = "pygetwindow", specifier = ">=0.0.9" },
     { name = "pyperclip", specifier = ">=1.11.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "requests", specifier = ">=2.32.0" },
 ]
 
 [[package]]

@@ -132,6 +132,9 @@ def main() -> None:
     Both stages are annotated on the saved image so you can see exactly
     what the model did at each step.
 
+    If AI grounding fails, falls back to BotCity template matching
+    (same behaviour as main.py).
+
     Usage:
         uv run python screenshot.py
 
@@ -142,8 +145,25 @@ def main() -> None:
     import os
     from dotenv import load_dotenv
     from grounding import init_client, find_element, GroundingError, _coarse_pass, _crop_and_upscale, CONFIDENCE_THRESHOLD
+    from fallback import find_with_botcity
 
     load_dotenv()
+
+    # ── Config (mirrors main.py) ──────────────────────────────────────────
+    NOTEPAD_TARGET = (
+        "Find the Windows Notepad application shortcut icon on the desktop. "
+        "Its graphic looks exactly like this: a white or cream-coloured notepad/paper "
+        "with a spiral coil binding running along the TOP edge of the page, "
+        "several horizontal blue ruled lines across the page body, "
+        "and a slight dog-ear fold on one corner. "
+        "A small blue Windows shortcut arrow may appear in the bottom-left of the icon. "
+        "The icon may be partially obscured by other windows — detect it even if only "
+        "part of the notepad graphic is visible. "
+        "Do NOT rely on the text label beneath the icon to identify it — the label may "
+        "say anything. Identify purely by the spiral-top-bound lined notepad graphic."
+    )
+    REFERENCE_IMAGE = Path(__file__).parent / "assets" / "notepad_icon.png"
+    BOTCITY_FIRST: bool = False   # set True to try template matching before AI
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -152,7 +172,6 @@ def main() -> None:
 
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     client = init_client(api_key)
-    target = "Notepad shortcut desktop icon"
     positions = ["top_left", "center", "bottom_right"]
 
     for position in positions:
@@ -164,37 +183,59 @@ def main() -> None:
         print("  Capturing desktop...")
         screenshot = capture_desktop()
 
+        coords = None
+        used_botcity = False
+        coarse_conf = 0.0
+        used_crop = False
+        coarse = None
+
+        # ── BotCity-first (optional) ──────────────────────────────────────
+        if BOTCITY_FIRST:
+            print("  BotCity-first: trying template matching...")
+            coords = find_with_botcity(REFERENCE_IMAGE)
+            if coords:
+                print(f"  BotCity match: {coords}")
+                used_botcity = True
+
         # ── Stage 1: coarse pass ──────────────────────────────────────────
-        print("  Stage 1: coarse grounding on full screenshot...")
-        coarse = _coarse_pass(client, model, screenshot, target)
-        coarse_conf = coarse["confidence"] if coarse else 0.0
+        if coords is None:
+            print("  Stage 1: coarse grounding on full screenshot...")
+            coarse = _coarse_pass(client, model, screenshot, NOTEPAD_TARGET)
+            coarse_conf = coarse["confidence"] if coarse else 0.0
 
-        if coarse and coarse["found"] and coarse_conf >= CONFIDENCE_THRESHOLD:
-            print(f"  Stage 1: box={coarse['box']}  conf={coarse_conf:.2f}  → cropping region")
-            fine_img, (rx1, ry1, rx2, ry2) = _crop_and_upscale(screenshot, coarse["box"])
-            used_crop = True
-        else:
-            print(f"  Stage 1: conf={coarse_conf:.2f} below {CONFIDENCE_THRESHOLD} → Stage 2 on full screen")
-            fine_img = screenshot
-            rx1, ry1, rx2, ry2 = 0, 0, screenshot.width, screenshot.height
-            used_crop = False
+            if coarse and coarse["found"] and coarse_conf >= CONFIDENCE_THRESHOLD:
+                print(f"  Stage 1: box={coarse['box']}  conf={coarse_conf:.2f}  → cropping region")
+                _fine_img, (rx1, ry1, rx2, ry2) = _crop_and_upscale(screenshot, coarse["box"])
+                used_crop = True
+            else:
+                print(f"  Stage 1: conf={coarse_conf:.2f} below {CONFIDENCE_THRESHOLD} → Stage 2 on full screen")
+                rx1, ry1, rx2, ry2 = 0, 0, screenshot.width, screenshot.height
+                used_crop = False
 
-        # ── Stage 2: fine pass ────────────────────────────────────────────
-        print("  Stage 2: fine grounding...")
-        try:
-            coords = find_element(client, model, screenshot, target)
-        except GroundingError as exc:
-            print(f"  WARNING: Grounding failed for '{position}': {exc}")
-            continue
+            # ── Stage 2: fine pass ────────────────────────────────────────
+            print("  Stage 2: fine grounding...")
+            try:
+                coords = find_element(client, model, screenshot, NOTEPAD_TARGET)
+            except GroundingError as exc:
+                print(f"  AI grounding failed for '{position}': {exc}")
+
+                # ── BotCity fallback ──────────────────────────────────────
+                print("  Trying BotCity template fallback...")
+                coords = find_with_botcity(REFERENCE_IMAGE)
+                if coords:
+                    print(f"  BotCity fallback match: {coords}")
+                    used_botcity = True
+                else:
+                    print(f"  BotCity also failed — skipping '{position}'")
+                    continue
 
         x, y = coords
 
         # ── Annotate both stages on the saved image ───────────────────────
         annotated = screenshot.copy()
 
-        # Draw the Stage 1 coarse region as a coloured rectangle (blue)
-        if coarse and coarse["found"]:
-            from PIL import ImageDraw
+        # Stage 1 coarse region — blue rectangle (skip if BotCity was used)
+        if not used_botcity and coarse and coarse["found"]:
             draw = ImageDraw.Draw(annotated)
             W, H = screenshot.width, screenshot.height
             y_min, x_min, y_max, x_max = coarse["box"]
@@ -209,12 +250,9 @@ def main() -> None:
                 fill="#4A90D9",
             )
 
-        # Draw the Stage 2 precise detection (red crosshair, existing helper)
-        label = (
-            f"Notepad [{position}]  "
-            f"S1={coarse_conf:.2f}  "
-            f"crop={'yes' if used_crop else 'no'}"
-        )
+        # Stage 2 / BotCity precise detection — red crosshair
+        source = "BotCity" if used_botcity else f"AI S1={coarse_conf:.2f} crop={'yes' if used_crop else 'no'}"
+        label = f"Notepad [{position}]  {source}"
         annotated = annotate_detection(annotated, x, y, label=label)
 
         filename = f"notepad_detected_{position}.png"

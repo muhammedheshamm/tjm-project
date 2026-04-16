@@ -44,12 +44,15 @@ tjm-project/
 ├── grounding.py         # Cascaded Gemini visual grounding engine
 ├── automation.py        # Notepad control (launch, type, save, close)
 ├── api_client.py        # JSONPlaceholder API client with fallback
+├── fallback.py          # BotCity template-matching fallback
 ├── screenshot.py        # mss capture + PIL annotation + demo tool
 ├── pyproject.toml       # uv project config + dependencies
 ├── requirements.txt     # Pinned dependency lockfile (pip-compatible)
 ├── .python-version      # Python 3.11
 ├── .env.example         # API key template
 ├── .gitignore
+├── assets/              # Reference images for BotCity template matching
+│   └── notepad_icon.png # Clean PNG crop of the Notepad icon (add manually)
 └── annotated_screenshots/   # Deliverable: annotated detection screenshots
 ```
 
@@ -126,6 +129,48 @@ A full run log is written to `automation.log`.
 
 ---
 
+## BotCity Template Matching Fallback
+
+When Gemini AI grounding fails — due to a `GroundingError`, low confidence, or an API problem — the automation automatically falls back to **BotCity template matching**, which uses OpenCV to scan the live desktop for a reference image of the icon.
+
+### Setup
+
+Place a clean PNG crop of the Notepad icon (just the icon graphic, no label text) at:
+
+```
+assets/notepad_icon.png
+```
+
+The image should be a tight crop around the icon at its natural desktop size (~64–80 px square).
+
+### BotCity-First Mode
+
+To try template matching **before** AI grounding (saves API calls when the reference image is reliable), set the flag at the top of `main.py` or `screenshot.py`:
+
+```python
+BOTCITY_FIRST: bool = True
+```
+
+If BotCity finds the icon, Gemini is never called. If BotCity fails, the flow falls through to full AI grounding automatically.
+
+### Full Priority Order
+
+```
+1. FIXED_ICON          — hardcoded coords, zero API calls (testing only)
+2. Cached coords        — reused from the previous post, zero API calls
+3. BotCity template     — only if BOTCITY_FIRST = True
+4. Gemini AI grounding  — cascaded Stage 1 + Stage 2, up to 3 retries
+5. BotCity template     — always tried as last resort if AI fails
+```
+
+Tune the match sensitivity in `fallback.py`:
+
+```python
+BOTCITY_THRESHOLD: float = 0.7   # lower = more lenient, higher = stricter
+```
+
+---
+
 ## No-AI Testing Mode
 
 To test the automation without any API calls, set `FIXED_ICON` in `main.py`:
@@ -190,6 +235,14 @@ You will be prompted three times (top-left, center, bottom-right). Move the Note
 | `post_filename(post)` | Returns `"post_{id}.txt"` |
 | `validate_post(post)` | Returns True if post has `id`, `title`, `body` fields |
 
+### `fallback.py`
+
+| Function | Description |
+|----------|-------------|
+| `find_with_botcity(reference_path, matching)` | Scan the live desktop for the reference PNG using BotCity OpenCV template matching; returns `(x, y)` or `None` |
+
+`BOTCITY_THRESHOLD = 0.7` — default minimum match score. Adjust in `fallback.py` if you get false positives (raise it) or misses (lower it).
+
 ---
 
 ## Error Handling
@@ -197,8 +250,9 @@ You will be prompted three times (top-left, center, bottom-right). Move the Note
 | Scenario | Behaviour |
 |----------|-----------|
 | Stage 1 confidence < 0.3 | Stage 2 runs on the full screen instead of a crop |
-| Stage 2 confidence < 0.3 | `GroundingError` raised with descriptive message; treated as "not found" |
-| Icon not found / grounding error | Retry up to 3× with 1.5s delay; skip post on all failures |
+| Stage 2 confidence < 0.3 | `GroundingError` raised with descriptive message; BotCity fallback triggered |
+| Icon not found / grounding error | Retry up to 3× with 1.5s delay; BotCity fallback tried; skip post on all failures |
+| BotCity reference image missing | Warning logged; BotCity step skipped, AI grounding proceeds normally |
 | Notepad doesn't open | 8s timeout on window title check; retry or skip |
 | Unexpected system popup | Gemini detects and dismisses automatically (up to 2 cycles) |
 | "Save changes?" dialog on close | Tab → Enter ("Don't save"); `taskkill` as last resort |
@@ -236,7 +290,7 @@ GEMINI_MODEL=gemini-2.5-computer-use-preview-10-2025
 | `GEMINI_API_KEY` | *(required)* | Google AI Studio API key |
 | `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Gemini model to use |
 
-`FIXED_ICON` and all retry/timeout constants are configured at the top of `main.py`.
+`FIXED_ICON`, `BOTCITY_FIRST`, `REFERENCE_IMAGE`, and all retry/timeout constants are configured at the top of `main.py`.
 
 ---
 
@@ -244,6 +298,9 @@ GEMINI_MODEL=gemini-2.5-computer-use-preview-10-2025
 
 **Why VLM-based grounding instead of template matching?**  
 Template matching requires a reference image and breaks when the icon changes size, theme, or background. A VLM reasons semantically — it finds "the Notepad icon" the same way a human would scan the screen. The description can be changed to target any element without touching the automation code.
+
+**Why keep BotCity template matching as a fallback?**  
+Template matching is deterministic, zero-latency, and works offline. When the reference image is a reliable match for the icon, it provides a fast safety net for the cases where the VLM has low confidence, hits a rate limit, or encounters an API error. The two approaches are complementary: VLM for flexibility, template matching for reliability.
 
 **Why two stages?**  
 A 64×64 icon on a 1920×1080 screenshot occupies ~0.2% of the image. Stage 1 narrows the search area; Stage 2 receives a zoomed view where the target is ~4× larger and easier to precisely localise. This mirrors how humans scan: first locate the region, then focus on the detail.

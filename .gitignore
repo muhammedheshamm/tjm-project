@@ -15,8 +15,6 @@ wheels/
 # Logs
 *.log
 
-# Demo screenshots
-annotated_screenshots/
 
 # uv lock file (optional: remove this line to commit the lockfile)
 # uv.lock

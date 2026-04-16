@@ -1,0 +1,16 @@
+[project]
+name = "tjm-project"
+version = "0.1.0"
+description = "Vision-based desktop automation with dynamic icon grounding using Gemini 2.5 Flash"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.73.1",
+    "httpx>=0.28.1",
+    "mss>=10.1.0",
+    "pillow>=12.2.0",
+    "pyautogui>=0.9.54",
+    "pygetwindow>=0.0.9",
+    "pyperclip>=1.11.0",
+    "python-dotenv>=1.2.2",
+]
